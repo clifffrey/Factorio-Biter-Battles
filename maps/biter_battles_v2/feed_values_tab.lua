@@ -222,22 +222,104 @@ local function find_costs(food_names)
     return result
 end
 
+local all_flasks = {
+    ["automation-science-pack"] = true,
+    ["logistic-science-pack"] = true,
+    ["military-science-pack"] = true,
+    ["chemical-science-pack"] = true,
+    ["production-science-pack"] = true,
+    ["utility-science-pack"] = true,
+    ["space-science-pack"] = true,
+}
+
+---@return table<string, number>
+local function get_research_costs()
+    local flask_costs = find_costs(all_flasks)
+    local costs = {}
+    for _, tech in pairs(game.forces.spectator.technologies) do
+        if tech.research_unit_ingredients then
+            local cost = 0
+            for _, ingredient in pairs(tech.research_unit_ingredients) do
+                if flask_costs[ingredient.name] then
+                    local flask_cost = 0
+                    for k, v in pairs(flask_costs[ingredient.name].raw_ingredients) do
+                        flask_cost = flask_cost + v * raw_costs[k].cost
+                    end
+                    cost = cost + flask_cost * ingredient.amount * tech.research_unit_count
+                end
+            end
+            costs[tech.name] = cost
+        end
+    end
+    return costs
+end
+
+---@return table<string, LuaTechnology>
+local function get_product_technology_map()
+    local technologies = game.forces.spectator.technologies
+    local result = {["space-science-pack"] = technologies["space-science-pack"]}
+    local recipes = game.forces.spectator.recipes
+    for _, tech in pairs(technologies) do
+        for _, effect in pairs(tech.effects) do
+            if effect.type == "unlock-recipe" then
+                local recipe = recipes[effect.recipe]
+                if #recipe.products == 1 then
+                    result[recipe.products[1].name] = tech
+                    if debug then
+                        log("Tech for " .. recipe.products[1].name .. " is " .. tech.name)
+                    end
+                end
+            end
+        end
+    end
+    return result
+end
+
+---@param cost_map table<string, number>
+local function populate_product_technology_costs(cost_map)
+    local product_technology_map = get_product_technology_map()
+    local research_costs = get_research_costs()
+    for product, _ in pairs(cost_map) do
+        local cost = 0
+        local tech = product_technology_map[product]
+        if tech then
+            local added_technologies = {}
+            local todo = {tech}
+            while #todo > 0 do
+                local current = table.remove(todo)
+                if not added_technologies[current.name] then
+                    added_technologies[current.name] = true
+                    for _, prereq in pairs(current.prerequisites) do
+                        table.insert(todo, prereq)
+                    end
+                    cost = cost + (research_costs[current.name] or 0)
+                end
+            end
+        end
+        cost_map[product] = cost
+    end
+end
+
 ---@param player LuaPlayer
 ---@param element LuaGuiElement
 ---@param food_product_info table<string, ProductInfo>
 local function add_feed_values(player, element, food_product_info)
+    local research_costs = {["automation-science-pack"] = 0, ["logistic-science-pack"] = 0, ["military-science-pack"] = 0, ["chemical-science-pack"] = 0, ["production-science-pack"] = 0, ["utility-science-pack"] = 0, ["space-science-pack"] = 0}
+    populate_product_technology_costs(research_costs)
+
     element.add{type = "label", caption = "The table below is meant to give some information about the relative benefits of each different science to throw.  The resource columns assume things about where productivity modules are used, and about how difficult oil is compared to ore, which will not always be correct.  Use online factorio calculators for more flexibility/accuracy."}.style.single_line = false
     local science_scrollpanel = element.add { type = "scroll-pane", name = "scroll_pane", direction = "vertical", horizontal_scroll_policy = "never", vertical_scroll_policy = "auto"}
     science_scrollpanel.style.maximal_height = 530
 
-    local t_summary = science_scrollpanel.add { type = "table", name = "feed_values_summary_header_table", column_count = 4, draw_horizontal_lines = false }
+    local t_summary = science_scrollpanel.add { type = "table", name = "feed_values_summary_header_table", column_count = 5, draw_horizontal_lines = false }
     t_summary.style.top_cell_padding = 2
     t_summary.style.bottom_cell_padding = 2
     local headersSummary = {
         {100, "", nil},
         {100, "Mutagen [img=info]", "A normalized value for how much mutagen is produced by sending 1 of this item. Higher values will generate more threat and more evo% increase"},
         {100, "Resources [img=info]", "The approximate raw ore cost of 1 of this item, valuing raw ore as 1, crude-oil/petro/light-oil/heavy-oil as 0.2, and water/steam as 0. This assumes 4xProd3 in the rocket silo, and 2xProd1 used in processing units, rocket control units, purple science, yellow science. This also assumes coal-powered steel furnaces are used"},
-        {150, "Resource Efficiency [img=info]", "A normalized value for mutagen/resources. Higher values are more resource efficient to send"}
+        {150, "Resource Efficiency [img=info]", "A normalized value for mutagen/resources. Higher values are more resource efficient to send"},
+        {150, "Resources to unlock [img=info]", "Approximate raw ore cost of the flasks necessary to research this recipe."},
     }
     for _, column_info in ipairs(headersSummary) do
         local label = t_summary.add { type = "label", caption = column_info[2], tooltip = column_info[3] }
@@ -288,6 +370,11 @@ local function add_feed_values(player, element, food_product_info)
         local label = t_summary.add { type = "label", caption = string.format("%.2fx [img=info]", (mutagen_val / normalized_mutagen_value) / (resources / normalized_resource_value)), tooltip = resource_efficiency_tooltip }
         label.style.minimal_width = headersSummary[4][1]
         label.style.horizontal_align = 'right'
+        local research_cost = research_costs[food_long_and_short[i].long_name]
+        local label = t_summary.add { type = "label", caption = string.format("%.0f", research_cost / 10) }
+        label.style.minimal_width = headersSummary[4][1]
+        label.style.horizontal_align = 'right'
+        -- log(string.format("%f = %.0f, %.0f", mutagen_val / resources, research_cost, num_intermediates))
     end
 end
 
